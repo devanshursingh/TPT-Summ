@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 TPT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
     "tpt-small": "configs/tpt-small-config.json",
-    "tpt-small-discrete": "configs/tpt-small-discrete-config.json",
+    "tpt-small-discrete": "configs/tpt-small-discrete-lm-config.json",
 }
 
 
@@ -76,10 +76,12 @@ class TPTConfig(PretrainedConfig):
         share_roles_among_heads=True,
         use_tpr_gate=False,
         tpr_output_type='add',
+        feed_forward_proj='relu',
+        use_cache=False,
         **kwargs
     ):
         super().__init__(
-            pad_token_id=pad_token_id, eos_token_id=eos_token_id, is_encoder_decoder=is_encoder_decoder, **kwargs,
+            pad_token_id=pad_token_id, eos_token_id=eos_token_id, is_encoder_decoder=is_encoder_decoder, **kwargs
         )
         self.vocab_size = vocab_size
         self.n_positions = n_positions
@@ -104,6 +106,9 @@ class TPTConfig(PretrainedConfig):
         self.share_roles_among_heads = share_roles_among_heads
         self.use_tpr_gate = use_tpr_gate
         self.tpr_output_type = tpr_output_type
+        # NOTE
+        self.feed_forward_proj = feed_forward_proj
+        self.use_cache = use_cache
 
     @property
     def max_position_embeddings(self):

@@ -15,9 +15,9 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from .configuration_tpt import TPTConfig
-from transformers.file_utils import DUMMY_INPUTS, DUMMY_MASK, add_start_docstrings, add_start_docstrings_to_callable
+from transformers.file_utils import DUMMY_INPUTS, DUMMY_MASK, add_start_docstrings#, add_start_docstrings_to_callable
 from .modeling_utils import PreTrainedModel, prune_linear_layer
-from transformers.modeling_t5 import load_tf_weights_in_t5, T5LayerNorm, T5DenseReluDense, T5LayerFF, T5Stack, T5Attention, T5LayerCrossAttention
+from transformers.models.t5.modeling_t5 import load_tf_weights_in_t5, T5LayerNorm, T5DenseReluDense, T5LayerFF, T5Stack, T5Attention, T5LayerCrossAttention
 
 
 logger = logging.getLogger(__name__)
@@ -178,12 +178,12 @@ class TPAttention(nn.Module):
 
     def forward(
         self,
-        input,
+        hidden_states,
         mask=None,
-        kv=None,
+        key_value_states=None,
         position_bias=None,
-        past_key_value_state=None,
-        head_mask=None,
+        past_key_value=None,
+        layer_head_mask=None,
         query_length=None,
         use_cache=False,
     ):
@@ -192,17 +192,19 @@ class TPAttention(nn.Module):
         """
         # Input is (bs, qlen, dim)
         # Mask is (bs, klen) (non-causal) or (bs, klen, klen)
-        # past_key_value_state[0] is (bs, n_heads, q_len - 1, dim_per_head)
+        # past_key_value[0] is (bs, n_heads, q_len - 1, dim_per_head)
+        input = hidden_states
+        kv = key_value_states
         bs, qlen, dim = input.size()
 
-        if past_key_value_state is not None:
+        if past_key_value is not None:
             assert self.is_decoder is True, "Encoder cannot cache past key value states"
             assert (
-                len(past_key_value_state) == 2
-            ), "past_key_value_state should have 2 past states: keys and values. Got {} past states".format(
-                len(past_key_value_state)
+                len(past_key_value) == 2
+            ), "past_key_value should have 2 past states: keys and values. Got {} past states".format(
+                len(past_key_value)
             )
-            real_qlen = qlen + past_key_value_state[0].shape[2] if query_length is None else query_length
+            real_qlen = qlen + past_key_value[0].shape[2] if query_length is None else query_length
         else:
             real_qlen = qlen
 
@@ -243,18 +245,18 @@ class TPAttention(nn.Module):
         if kv is None:
             k = shape(self.k(input))  # (bs, n_heads, qlen, dim_per_head)
             v = shape(self.v(input))  # (bs, n_heads, qlen, dim_per_head)
-        elif past_key_value_state is None:
+        elif past_key_value is None:
             k = v = kv
             k = shape(self.k(k))  # (bs, n_heads, qlen, dim_per_head)
             v = shape(self.v(v))  # (bs, n_heads, qlen, dim_per_head)
 
-        if past_key_value_state is not None:
+        if past_key_value is not None:
             if kv is None:
-                k_, v_ = past_key_value_state
+                k_, v_ = past_key_value
                 k = torch.cat([k_, k], dim=2)  # (bs, n_heads, klen, dim_per_head)
                 v = torch.cat([v_, v], dim=2)  # (bs, n_heads, klen, dim_per_head)
             else:
-                k, v = past_key_value_state
+                k, v = past_key_value
 
         if self.is_decoder and use_cache is True:
             present_key_value_state = ((k, v),)
@@ -270,7 +272,7 @@ class TPAttention(nn.Module):
 
             # if key and values are already calculated
             # we want only the last query position bias
-            if past_key_value_state is not None:
+            if past_key_value is not None:
                 position_bias = position_bias[:, :, -1:, :]
 
             if mask is not None:
@@ -281,8 +283,8 @@ class TPAttention(nn.Module):
         weights = F.dropout(weights, p=self.dropout, training=self.training)  # (bs, n_heads, qlen, klen)
 
         # Mask heads if we want to
-        if head_mask is not None:
-            weights = weights * head_mask
+        if layer_head_mask is not None:
+            weights = weights * layer_head_mask
 
         v_bar = torch.matmul(weights, v)  # (bs, n_heads, qlen, dim_per_head)
 
@@ -434,8 +436,8 @@ class TPTLayerSelfAttention(nn.Module):
         hidden_states,
         attention_mask=None,
         position_bias=None,
-        head_mask=None,
-        past_key_value_state=None,
+        layer_head_mask=None,
+        past_key_value=None,
         use_cache=False,
     ):
         norm_x = self.layer_norm(hidden_states)
@@ -443,8 +445,8 @@ class TPTLayerSelfAttention(nn.Module):
             norm_x,
             mask=attention_mask,
             position_bias=position_bias,
-            head_mask=head_mask,
-            past_key_value_state=past_key_value_state,
+            layer_head_mask=layer_head_mask,
+            past_key_value=past_key_value,
             use_cache=use_cache,
         )
         bs = hidden_states.size(0)
@@ -583,8 +585,8 @@ class TPTLayerCrossAttention(nn.Module):
         kv,
         attention_mask=None,
         position_bias=None,
-        head_mask=None,
-        past_key_value_state=None,
+        layer_head_mask=None,
+        past_key_value=None,
         use_cache=False,
         query_length=None,
     ):
@@ -606,10 +608,10 @@ class TPTLayerCrossAttention(nn.Module):
         attention_output = self.EncDecAttention(
             norm_x,
             mask=attention_mask,
-            kv=kv,
+            key_value_states=kv,
             position_bias=position_bias,
-            head_mask=head_mask,
-            past_key_value_state=past_key_value_state,
+            layer_head_mask=layer_head_mask,
+            past_key_value=past_key_value,
             use_cache=use_cache,
             query_length=query_length,
         )
@@ -694,24 +696,24 @@ class TPTBlock(nn.Module):
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         encoder_decoder_position_bias=None,
-        head_mask=None,
-        past_key_value_state=None,
+        layer_head_mask=None,
+        past_key_value=None,
         use_cache=False,
     ):
 
-        if past_key_value_state is not None:
-            assert self.is_decoder, "Only decoder can use `past_key_value_states`"
+        if past_key_value is not None:
+            assert self.is_decoder, "Only decoder can use `past_key_values`"
             expected_num_past_key_value_states = 2 if encoder_hidden_states is None else 4
 
             error_message = "There should be {} past states. 2 (past / key) for self attention.{} Got {} past key / value states".format(
                 expected_num_past_key_value_states,
                 "2 (past / key) for cross attention" if expected_num_past_key_value_states == 4 else "",
-                len(past_key_value_state),
+                len(past_key_value),
             )
-            assert len(past_key_value_state) == expected_num_past_key_value_states, error_message
+            assert len(past_key_value) == expected_num_past_key_value_states, error_message
 
-            self_attn_past_key_value_state = past_key_value_state[:2]
-            cross_attn_past_key_value_state = past_key_value_state[2:]
+            self_attn_past_key_value_state = past_key_value[:2]
+            cross_attn_past_key_value_state = past_key_value[2:]
         else:
             self_attn_past_key_value_state, cross_attn_past_key_value_state = None, None
 
@@ -719,8 +721,8 @@ class TPTBlock(nn.Module):
             hidden_states,
             attention_mask=attention_mask,
             position_bias=position_bias,
-            head_mask=head_mask,
-            past_key_value_state=self_attn_past_key_value_state,
+            layer_head_mask=layer_head_mask,
+            past_key_value=self_attn_past_key_value_state,
             use_cache=use_cache,
         )
         hidden_states, present_key_value_state = self_attention_outputs[:2]
@@ -739,8 +741,8 @@ class TPTBlock(nn.Module):
                 kv=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
                 position_bias=encoder_decoder_position_bias,
-                head_mask=head_mask,
-                past_key_value_state=cross_attn_past_key_value_state,
+                layer_head_mask=layer_head_mask,
+                past_key_value=cross_attn_past_key_value_state,
                 query_length=query_length,
                 use_cache=use_cache,
             )
@@ -902,7 +904,7 @@ class TPTStack(TPTPreTrainedModel):
         encoder_attention_mask=None,
         inputs_embeds=None,
         head_mask=None,
-        past_key_value_states=None,
+        past_key_values=None,
         use_cache=False,
     ):
 
@@ -925,13 +927,13 @@ class TPTStack(TPTPreTrainedModel):
 
         batch_size, seq_length = input_shape
 
-        if past_key_value_states is not None:
+        if past_key_values is not None:
             assert seq_length == 1, "Input shape is {}, but should be {} when using past_key_value_sates".format(
                 input_shape, (batch_size, 1)
             )
             # required mask seq length can be calculated via length of past
             # key value states and seq_length = 1 for the last token
-            mask_seq_length = past_key_value_states[0][0].shape[2] + seq_length
+            mask_seq_length = past_key_values[0][0].shape[2] + seq_length
         else:
             mask_seq_length = seq_length
 
@@ -941,9 +943,9 @@ class TPTStack(TPTPreTrainedModel):
             encoder_seq_length = encoder_hidden_states.shape[1]
             encoder_attention_mask = torch.ones(batch_size, encoder_seq_length).to(inputs_embeds.device)
 
-        # initialize past_key_value_states with `None` if past does not exist
-        if past_key_value_states is None:
-            past_key_value_states = [None] * len(self.block)
+        # initialize past_key_values with `None` if past does not exist
+        if past_key_values is None:
+            past_key_values = [None] * len(self.block)
 
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, self.device)
@@ -963,7 +965,7 @@ class TPTStack(TPTPreTrainedModel):
 
         hidden_states = self.dropout(inputs_embeds)
 
-        for i, (layer_module, past_key_value_state) in enumerate(zip(self.block, past_key_value_states)):
+        for i, (layer_module, past_key_value) in enumerate(zip(self.block, past_key_values)):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -974,8 +976,8 @@ class TPTStack(TPTPreTrainedModel):
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_extended_attention_mask,
                 encoder_decoder_position_bias=encoder_decoder_position_bias,
-                head_mask=head_mask[i],
-                past_key_value_state=past_key_value_state,
+                layer_head_mask=head_mask[i],
+                past_key_value=past_key_value,
                 use_cache=use_cache,
             )
             # layer_outputs is a tuple with:
@@ -1133,7 +1135,7 @@ class TPTModel(TPTPreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
-    @add_start_docstrings_to_callable(T5_INPUTS_DOCSTRING)
+    #@add_start_docstrings_to_callable(T5_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids=None,
@@ -1202,7 +1204,7 @@ class TPTModel(TPTPreTrainedModel):
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
             inputs_embeds=decoder_inputs_embeds,
-            past_key_value_states=decoder_past_key_value_states,
+            past_key_values=decoder_past_key_value_states,
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
@@ -1259,7 +1261,7 @@ class TPTForConditionalGeneration(TPTPreTrainedModel):
     def get_decoder(self):
         return self.decoder
 
-    @add_start_docstrings_to_callable(T5_INPUTS_DOCSTRING)
+    #@add_start_docstrings_to_callable(T5_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids=None,
@@ -1267,9 +1269,9 @@ class TPTForConditionalGeneration(TPTPreTrainedModel):
         encoder_outputs=None,
         decoder_input_ids=None,
         decoder_attention_mask=None,
-        decoder_past_key_value_states=None,
+        past_key_values=None,
         use_cache=True,
-        lm_labels=None,
+        labels=None,
         inputs_embeds=None,
         decoder_inputs_embeds=None,
         head_mask=None,
@@ -1326,30 +1328,30 @@ class TPTForConditionalGeneration(TPTPreTrainedModel):
 
         hidden_states = encoder_outputs[0]
 
-        if lm_labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
+        if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
-            decoder_input_ids = self._shift_right(lm_labels)
+            decoder_input_ids = self._shift_right(labels)
 
         # If decoding with past key value states, only the last tokens
         # should be given as an input
-        if decoder_past_key_value_states is not None:
-            assert lm_labels is None, "Decoder should not use cached key value states when training."
+        if past_key_values is not None:
+            assert labels is None, "Decoder should not use cached key value states when training."
             if decoder_input_ids is not None:
                 decoder_input_ids = decoder_input_ids[:, -1:]
             if decoder_inputs_embeds is not None:
                 decoder_inputs_embeds = decoder_inputs_embeds[:, -1:]
 
-        if decoder_attention_mask is None and lm_labels is not None:
-            zero_vec = torch.zeros_like(lm_labels)
-            one_vec = torch.ones_like(lm_labels)
-            decoder_attention_mask = torch.where(lm_labels != -100, one_vec, zero_vec)
+        if decoder_attention_mask is None and labels is not None:
+            zero_vec = torch.zeros_like(labels)
+            one_vec = torch.ones_like(labels)
+            decoder_attention_mask = torch.where(labels != -100, one_vec, zero_vec)
 
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
             inputs_embeds=decoder_inputs_embeds,
-            past_key_value_states=decoder_past_key_value_states,
+            past_key_values=past_key_values,
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=head_mask,
@@ -1448,9 +1450,9 @@ class TPTForConditionalGeneration(TPTPreTrainedModel):
                 decoder_enc_layerwise_roles_used[0][layer_index][
                     torch.unique(decoder_enc_role_predictions[layer_index])] = 1
 
-        if lm_labels is not None:
+        if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), lm_labels.view(-1))
+            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
 
             reg_loss = 0.  # role attention regularization loss
             if self.config.use_discrete_roles:
@@ -1507,7 +1509,242 @@ class TPTForConditionalGeneration(TPTPreTrainedModel):
 
         return {
             "decoder_input_ids": input_ids,
-            "decoder_past_key_value_states": decoder_past_key_value_states,
+            "past_key_values": decoder_past_key_value_states,
+            "encoder_outputs": encoder_outputs,
+            "attention_mask": attention_mask,
+            "use_cache": use_cache,
+        }
+
+    def _reorder_cache(self, past, beam_idx):
+        # if decoder past is not included in output
+        # speedy decoding is disabled and no need to reorder
+        if len(past) < 2:
+            logger.warning("You might want to consider setting `use_cache=True` to speed up decoding")
+            return past
+
+        decoder_past = past[1]
+        past = (past[0],)
+        reordered_decoder_past = ()
+        for layer_past_states in decoder_past:
+            # get the correct batch idx from layer past batch dim
+            # batch dim of `past` is at 2nd position
+            reordered_layer_past_states = ()
+            for layer_past_state in layer_past_states:
+                # need to set correct `past` for each of the four key / value states
+                reordered_layer_past_states = reordered_layer_past_states + (
+                    layer_past_state.index_select(0, beam_idx),
+                )
+
+            assert reordered_layer_past_states[0].shape == layer_past_states[0].shape
+            assert len(reordered_layer_past_states) == len(layer_past_states)
+
+            reordered_decoder_past = reordered_decoder_past + (reordered_layer_past_states,)
+        return past + (reordered_decoder_past,)
+
+
+@add_start_docstrings("""T5 Encoder with a `language modeling` head on top. """, T5_START_DOCSTRING)
+class TPTWithLMHeadModel(TPTPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model_dim = config.d_model
+        self.use_discrete_roles = config.use_discrete_roles
+
+        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+
+        encoder_config = copy.deepcopy(config)
+        encoder_config.is_encoder_decoder = False
+        if encoder_config.use_tp_enc:
+            self.encoder = TPTStack(encoder_config, self.shared)
+        else:
+            self.encoder = T5Stack(encoder_config, self.shared)
+
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+        self.init_weights()
+
+    def get_input_embeddings(self):
+        return self.shared
+
+    def set_input_embeddings(self, new_embeddings):
+        self.shared = new_embeddings
+        self.encoder.set_input_embeddings(new_embeddings)
+        self.decoder.set_input_embeddings(new_embeddings)
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def get_encoder(self):
+        return self.encoder
+
+    def get_decoder(self):
+        return self.decoder
+
+    #@add_start_docstrings_to_callable(T5_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        head_mask=None,
+        labels=None
+    ):
+        r"""
+        lm_labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size,)`, `optional`, defaults to :obj:`None`):
+                Labels for computing the sequence classification/regression loss.
+                Indices should be in :obj:`[-100, 0, ..., config.vocab_size - 1]`.
+                All labels set to ``-100`` are ignored (masked), the loss is only
+                computed for labels in ``[0, ..., config.vocab_size]``
+
+    Returns:
+        :obj:`tuple(torch.FloatTensor)` comprising various elements depending on the configuration (:class:`~transformers.T5Config`) and inputs.
+        loss (:obj:`torch.FloatTensor` of shape :obj:`(1,)`, `optional`, returned when :obj:`lm_label` is provided):
+            Classification loss (cross entropy).
+        prediction_scores (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, config.vocab_size)`)
+            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+            If `past_key_value_states` is used only the last prediction_scores of the sequences of shape :obj:`(batch_size, 1, hidden_size)` is output.
+        decoder_past_key_value_states (:obj:`tuple(tuple(torch.FloatTensor))` of length :obj:`config.n_layers` with each tuple having 4 tensors of shape :obj:`(batch_size, num_heads, sequence_length, embed_size_per_head)`, `optional`, returned when ``use_cache=True``):
+            Contains pre-computed key and value hidden-states of the attention blocks.
+            Can be used to speed up sequential decoding (see `decoder_past_key_value_states` input).
+            Note that when using `decoder_past_key_value_states`, the model only outputs the last `prediction_score` of the sequence of shape :obj:`(batch_size, 1, config.vocab_size)`.
+        hidden_states (:obj:`tuple(torch.FloatTensor)`, `optional`, returned when ``config.output_hidden_states=True``):
+            Tuple of :obj:`torch.FloatTensor` (one for the output of the embeddings + one for the output of each layer)
+            of shape :obj:`(batch_size, sequence_length, hidden_size)`.
+            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
+        attentions (:obj:`tuple(torch.FloatTensor)`, `optional`, returned when ``config.output_attentions=True``):
+            Tuple of :obj:`torch.FloatTensor` (one for each layer) of shape
+            :obj:`(batch_size, num_heads, sequence_length, sequence_length)`.
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention.
+
+    Examples::
+
+        from transformers import T5Tokenizer, T5ForConditionalGeneration
+
+        tokenizer = T5Tokenizer.from_pretrained('t5-small')
+        model = T5ForConditionalGeneration.from_pretrained('t5-small')
+        input_ids = tokenizer.encode("Hello, my dog is cute", return_tensors="pt")  # Batch size 1
+        outputs = model(input_ids=input_ids, decoder_input_ids=input_ids, lm_labels=input_ids)
+        loss, prediction_scores = outputs[:2]
+
+        tokenizer = T5Tokenizer.from_pretrained('t5-small')
+        model = T5ForConditionalGeneration.from_pretrained('t5-small')
+        input_ids = tokenizer.encode("summarize: Hello, my dog is cute", return_tensors="pt")  # Batch size 1
+        outputs = model.generate(input_ids)
+        """
+
+        encoder_outputs = self.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            head_mask=head_mask
+        )
+
+        sequence_output = encoder_outputs[0]
+        # Rescale output before projecting on vocab
+        # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+
+        # Analyze the role attention
+        num_elements_above_98 = 0
+        num_elements_above_90 = 0
+        # Initialize to 1 to avoid dividing by zero. This shouldn't ever actually happen but play it safe.
+        num_elements = 1
+        encoder_layerwise_roles_used = None
+        enc_self_attn = None
+        if not self.training and self.use_discrete_roles and labels is not None:
+            enc_self_attn = self.encoder.role_attn()
+            enc_self_attn = enc_self_attn.permute(1, 0, 2, 3, 4)
+
+            # 4 must be dim = num_roles
+            # arg_ind: [batch_size, seq_size]
+
+            encoder_max_role_attention, encoder_role_predictions = torch.max(enc_self_attn, dim=4)
+            # *_max_role_attention (max): [batch_size, n_layers, n_heads, seq_size]
+            # *_role_predictions (argmax): [batch_size, n_layers, n_heads, seq_size]
+
+            # Set all of the PAD token attentions to -1
+            encoder_attn_mask = self.make_masks(attention_mask)
+            encoder_attn_mask = encoder_attn_mask.to(encoder_max_role_attention.device)
+            encoder_role_attention = encoder_max_role_attention.masked_fill(encoder_attn_mask == 0, -1)
+
+            # Set all of the PAD token role predictions to -1
+            encoder_role_predictions = encoder_role_predictions.masked_fill(encoder_attn_mask == 0, -1)
+
+            num_elements_above_98 += torch.sum(encoder_role_attention > .98)
+            num_elements_above_90 += torch.sum(encoder_role_attention > .9)
+            # We masked the role predictions from the PAD elements to -1 so only count the roles
+            # that are for non-PAD elements
+            num_elements += torch.sum(encoder_role_predictions >= 0)
+
+            # Place the layers first so we can find the unique roles used at each layer
+            encoder_role_predictions = encoder_role_predictions.permute(1, 0, 2, 3)
+            # Squeeze all of the roles used into a single dimension, -1 means inferred from remaining dims
+            # So find unique roles from all batches, heads, and tokens for this layer
+            encoder_role_predictions = encoder_role_predictions.reshape(len(self.encoder.block), -1)
+
+            # TODO ideally these tensors should be of type torch.bool but the logical OR operator wasn't working in pytorch
+            # at this time
+            num_roles = enc_self_attn.shape[-1]
+            encoder_layerwise_roles_used = torch.zeros((1, len(self.encoder.block), num_roles), dtype=torch.uint8,
+                                                    device=encoder_role_predictions.device)
+
+            for layer_index in range(encoder_role_predictions.shape[0]):
+                encoder_layerwise_roles_used[0][layer_index][torch.unique(encoder_role_predictions[layer_index])] = 1
+
+        if labels is not None:
+            loss_fct = CrossEntropyLoss(ignore_index=-100)
+            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+
+            reg_loss = 0.  # role attention regularization loss
+            if self.config.use_discrete_roles:
+                if self.config.use_tp_enc:
+                    enc_reg_loss = self.encoder.reg_loss
+                    #enc_reg_loss = encoder_outputs[-1]
+                    reg_loss += enc_reg_loss
+
+        # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+        outputs = (loss,) + (reg_loss,) + encoder_outputs + (num_elements_above_98, num_elements_above_90, num_elements,
+                    encoder_layerwise_roles_used, enc_self_attn)
+        return outputs
+
+    def make_masks(self, src_mask):#, trg_mask):
+        # src = [batch_size, src_seq_size]
+        # trg = [batch_size, trg_seq_size]
+
+        src_mask = src_mask.unsqueeze(1).unsqueeze(2)
+        #trg_pad_mask = trg_mask.unsqueeze(1).unsqueeze(3)
+        # trg_mask = [batch_size, 1, trg_seq_size, 1]
+        #trg_len = trg_mask.shape[1]
+
+        # if getattr(torch, "bool") and torch.__version__ != "1.2.0" and torch.device('cuda') == trg_mask.device:
+        #     # bug in torch 1.3.0 needs this workaround
+        #     trg_sub_mask = torch.tril(torch.ones((trg_len, trg_len), dtype=torch.long, device=trg_mask.device))
+        #     trg_mask = trg_pad_mask & trg_sub_mask
+        # else:
+        #     # this is the correct code (torch 1.2.0 and torch 1.4.0?)
+        #     # workarond for torch.tril() not currently supporting bool types
+        #     trg_sub_mask = torch.tril(
+        #         torch.ones((trg_len, trg_len), dtype=torch.long, device=trg_mask.device))
+
+        #     trg_mask = trg_pad_mask & trg_sub_mask  # .bool()
+
+        # src_mask = [batch_size, 1, 1, pad_seq]
+        # trg_mask = [batch_size, 1, pad_seq, past_seq]
+
+        return src_mask#, trg_mask
+
+    def prepare_inputs_for_generation(self, input_ids, past, attention_mask, use_cache, **kwargs):
+        assert past is not None, "past has to be defined for encoder_outputs"
+
+        # first step
+        if len(past) < 2:
+            encoder_outputs, decoder_past_key_value_states = past, None
+        else:
+            encoder_outputs, decoder_past_key_value_states = past[0], past[1]
+
+        return {
+            "decoder_input_ids": input_ids,
+            "past_key_values": decoder_past_key_value_states,
             "encoder_outputs": encoder_outputs,
             "attention_mask": attention_mask,
             "use_cache": use_cache,

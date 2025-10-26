@@ -1,0 +1,13 @@
+name: capstone2
+channels:
+   - defaults
+dependencies:
+   - numpy
+   - pip
+   - pip:
+     - torch
+     - datasets
+     - rouge
+     - pytorch_lightning==0.7.6
+     - transformers
+     - spacy-udpipe

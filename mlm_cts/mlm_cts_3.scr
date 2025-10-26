@@ -1,0 +1,46 @@
+#!/bin/bash
+#SBATCH --partition=gpuk80
+#SBATCH --gres=gpu:1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=6
+#SBATCH --job-name=CTS-3
+#SBATCH --time=48:0:0
+#SBATCH --mail-type=end
+#SBATCH --mail-user=dsingh33@jhu.edu
+#SBATCH --output=mlm_cts_3.log
+#SBATCH --error=mlm_cts_3.err
+
+
+
+
+module load cuda
+
+
+module load anaconda
+conda activate capstone2
+
+
+python3 mlm.py \
+--dataset_name=c4 \
+--cache_dir=cache \
+--tokenizer_name=t5-small \
+--config_name=configs/tpt-small-discrete-lm \
+--model_name_or_path=tpt-small-discrete \
+--learning_rate=5e-3 \
+--gradient_accumulation_steps=1 \
+--train_batch_size=16 \
+--num_train_epochs=20 \
+--eval_batch_size=32 \
+--n_gpu=1 \
+--run_id=00 \
+--resume_from_epoch=12 \
+--resume_ckpt_path=checkpointepoch=11.ckpt \
+--scheduler_type=inverse_sqrt \
+--output_dir=out \
+--overwrite_output_dir \
+--optim_name=adafactor \
+--fix_lr_step=30000 \
+--num_roles_per_layer=50 \
+--do_train \
+--role_regularization=0.0 \
+--seed=42

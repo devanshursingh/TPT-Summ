@@ -1,0 +1,84 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+install.packages("ggplot2")
+install.packages("reshape2")
+install.packages("arrow")
+library(foreign)
+library(nnet)
+library(ggplot2)
+library(reshape2)
+library(arrow)
+```
+```{r}
+install.packages("tidyverse")
+library(tidyverse)
+```
+```{r}
+corr_df <- arrow::read_parquet("second.parquet.gzip")
+colnames(corr_df)[c(15:36)] <- c("R3", "R6", "R8", "R10", "R15", "R19", "R20", "R21", "R25", "R29", "R31", "R32", "R34", "R35", "R36", "R38", "R40", "R42", "R43", "R44", "R47", "R48")
+corr_df
+```
+```{r}
+model <- lm(sentient ~ R3+R6+R8+R10+R15+R19+R20+R21+R25+R29+R31+R32+R34+R35+R36+R38+R40+R42+R43+R44+R47+R48, data = corr_df)
+summary(model)
+```
+```{r}
+h <- data.frame(summary(model)$coefficient)
+write.csv(h,"C:\\Users\\devanshu\\Downloads\\was_used.csv")
+```
+# corr_df$discrete_roles <- as.factor(corr_df$discrete_roles)
+# #install.packages("caret")
+# library(caret)
+# print(levels(corr_df$discrete_roles))
+# index <- createDataPartition(corr_df$discrete_roles, p = .90, list = FALSE)
+# train <- corr_df[index,]
+# test <- corr_df[-index,]
+# train$discrete_roles <- relevel(train$discrete_roles, ref = "0")
+# install.packages("nnet")
+# require(nnet)
+# # Training the multinomial model
+# multinom_model <- multinom(discrete_roles ~ ., data = corr_df)
+# # Checking the model
+# summary(multinom_model)
+```
+```{r}
+z <- summary(multinom_model)$coefficients/summary(multinom_model)$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+```{r}
+f <- melt(p)
+f <- dcast(f, Var1 ~ Var2)
+drops <- c("(Intercept)")
+f <- f[ , !(names(f) %in% drops)]
+magic_fun <- function(x){
+  return (x < 0.05)}
+  
+# applying the custom function to every value and converting 
+# it to dataframe, as lapply returns result in list 
+# we have to convert it to data frame
+f <- data.frame(lapply(f,magic_fun))
+write.csv(f,"C:\\Users\\devanshu\\Downloads\\pval.csv")
+```
+```{r}
+h <- melt(summary(multinom_model)$coefficients)
+h <- dcast(h, Var1 ~ Var2)
+drops <- c("(Intercept)")
+h <- h[ , !(names(h) %in% drops)]
+write.csv(h,"C:\\Users\\devanshu\\Downloads\\coeff.csv")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

@@ -21,12 +21,15 @@ from transformers import (
     AutoTokenizer,
     get_linear_schedule_with_warmup,
     get_constant_schedule_with_warmup,
-    T5ForConditionalGeneration,
+    T5ForConditionalGeneration, # NOTE
     T5Config
 )
 
+# from models.configuration_t5 import T5Config
+# from models.modeling_t5 import T5ForConditionalGeneration
+
 from models.configuration_tpt import TPTConfig
-from models.modeling_tpt import TPTForConditionalGeneration
+from models.modeling_tpt import TPTForConditionalGeneration, TPTWithLMHeadModel
 
 from optim_utils import Adafactor, get_inverse_sqrt_schedule_with_warmup
 
@@ -40,11 +43,12 @@ MODEL_MODES = {
     "token-classification": AutoModelForTokenClassification,
     "language-modeling": T5ForConditionalGeneration,
     "tpt-language_modeling": TPTForConditionalGeneration,
+    "tpt-masked_language_modeling": TPTWithLMHeadModel,
 }
 
 CONFIG_MODES = {
     "language-modeling": T5Config,
-    "tpt-language_modeling": TPTConfig,
+    "tpt-masked_language_modeling": TPTConfig,
 }
 
 
@@ -62,7 +66,7 @@ class BaseTransformer(pl.LightningModule):
 
         super().__init__()
         set_seed(hparams)
-
+        
         self.hparams = hparams
         cache_dir = self.hparams.cache_dir if self.hparams.cache_dir else None
         self.config = CONFIG_MODES[mode].from_pretrained(
@@ -75,13 +79,16 @@ class BaseTransformer(pl.LightningModule):
             self.hparams.tokenizer_name if self.hparams.tokenizer_name else self.hparams.model_name_or_path,
             cache_dir=cache_dir,
         )
-        self.model = MODEL_MODES[mode].from_pretrained(
-            self.hparams.model_name_or_path,
-            return_unpretrained=self.hparams.train_from_scratch,
-            from_tf=bool(".ckpt" in self.hparams.model_name_or_path),
-            config=self.config,
-            cache_dir=cache_dir,
-        )
+        # TODO: add a way to load model from checkpoint
+        # self.model = MODEL_MODES[mode].from_pretrained(
+        #     self.hparams.model_name_or_path,
+        #     return_unpretrained=self.hparams.train_from_scratch,
+        #     from_tf=bool(".ckpt" in self.hparams.model_name_or_path),
+        #     config=self.config,
+        #     cache_dir=cache_dir,
+        # )
+        self.model = MODEL_MODES[mode](config=self.config)
+        
         total_params = sum(p.numel() for p in self.model.parameters())
         logger.info("Total number of paramter: %s", total_params)
         print(total_params)

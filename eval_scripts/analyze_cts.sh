@@ -1,0 +1,11 @@
+python3 analyze_roles.py \
+--data_file=uds_sentences.json \
+--tokenizer_name=t5-small \
+--config_name=configs/tpt-small-discrete-lm \
+--dataset_name=c4 \
+--model_name_or_path=tpt-small-discrete \
+--run_id=00 \
+--evaluate_epoch=19 \
+--cache_dir=cache \
+--model_path=final_out \
+--no_cuda True
